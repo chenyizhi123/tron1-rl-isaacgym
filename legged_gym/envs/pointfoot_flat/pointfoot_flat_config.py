@@ -245,7 +245,7 @@ class BipedCfgPF(BaseConfig):
             collision = -1
             action_smooth = -0.005   # 减少对动作平滑的惩罚
             orientation = -5.0       # 减少对姿态的严格要求
-            feet_distance = -10.0  # 禁用双脚距离限制
+            feet_distance = -50.0  # 禁用双脚距离限制
             feet_regulation = -0.05
             foot_landing_vel = -0.15
             tracking_contacts_shaped_force = -1
@@ -254,8 +254,8 @@ class BipedCfgPF(BaseConfig):
             # 单腿行走相关奖励
             single_leg_support = 3.0        # 奖励支撑腿正确接触模式
             non_support_leg_penalty = -15.0 # 惩罚非支撑腿接触
-            single_leg_balance = 4.0        # 单腿平衡奖励
-            upright_posture = 8.0           # 防止跪地，鼓励直立
+            single_leg_balance = 3.0        # 单腿平衡奖励
+            upright_posture = 1.5           # 防止跪地，鼓励直立
             non_support_leg_height = 2.0    # 非支撑腿高度控制
 
         only_positive_rewards = False  # if true negative total rewards are clipped at zero (avoids early termination problems)
@@ -269,7 +269,7 @@ class BipedCfgPF(BaseConfig):
         )
         soft_dof_vel_limit = 1.0
         soft_torque_limit = 0.8
-        base_height_target = 0.65 # 单腿行走时稍微降低重心
+        base_height_target = 0.8 # 单腿行走时稍微降低重心
         feet_height_target = 0.10
         min_feet_distance = 0.115
         about_landing_threshold = 0.08
