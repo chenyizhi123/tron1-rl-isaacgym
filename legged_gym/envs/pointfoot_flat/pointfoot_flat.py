@@ -305,20 +305,19 @@ class BipedPF(BaseTask):
         # 1. 足部接触状态 (2维)
         foot_contacts = (torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 1.0).float()
         
-        # 2. 足部高度信息 (2维)
-        foot_heights_normalized = self.foot_heights * 10.0  # 归一化足部高度
+        # 2. 足部高度信息 (2维) - 使用足部Z坐标相对于地面的高度
+        foot_z_heights = self.foot_positions[:, :, 2] - self._get_foot_heights()
+        foot_heights_normalized = torch.clip(foot_z_heights, 0, 1)   # 归一化足部高度
         
         # 3. 基座垂直加速度 (1维)
         base_z_acc = ((self.base_lin_vel[:, 2] - getattr(self, 'last_base_z_vel', torch.zeros_like(self.base_lin_vel[:, 2]))) / self.dt).unsqueeze(1)
         self.last_base_z_vel = self.base_lin_vel[:, 2].clone()
         
         # 4. 接触力大小 (2维)
-        contact_force_magnitudes = torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) * 0.01  # 缩放
+        contact_force_magnitudes = torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1)   # 缩放
         
         # 5. 步态相位信息 (2维) - 增强版
-        gait_phase_enhanced = torch.cat([
-            self.desired_contact_states,  # 期望的接触状态
-        ], dim=-1)
+        gait_phase_enhanced = self.desired_contact_states  # 期望的接触状态
         
         # 6. 腾空时间信息 (1维)
         both_feet_airborne = (torch.sum(foot_contacts, dim=1) == 0).float().unsqueeze(1)
@@ -331,7 +330,7 @@ class BipedPF(BaseTask):
         
         critic_obs_buf = torch.cat((
             self.base_lin_vel * self.obs_scales.lin_vel,  # 基础线性速度 (3维)
-            self.obs_buf,  # 原始观测 (30维)
+            obs_buf,  # 原始观测 (30维)
             foot_contacts,  # 足部接触状态 (2维)
             foot_heights_normalized,  # 足部高度 (2维)
             base_z_acc,  # 垂直加速度 (1维)
@@ -442,8 +441,11 @@ class BipedPF(BaseTask):
 
     def _reward_feet_regulation(self):
         feet_height = self.cfg.rewards.base_height_target * 0.001
+        # 计算足部相对于地面的高度
+        foot_heights_2d = self.foot_positions[:, :, 2] - self._get_foot_heights()
+        foot_heights_2d = torch.clip(foot_heights_2d, 0, 1)
         reward = torch.sum(
-            torch.exp(-self.foot_heights / feet_height)
+            torch.exp(-foot_heights_2d / feet_height)
             * torch.square(torch.norm(self.foot_velocities[:, :, :2], dim=-1)), dim=1)
         return reward
 
@@ -454,7 +456,10 @@ class BipedPF(BaseTask):
     def _reward_foot_landing_vel(self):
         z_vels = self.foot_velocities[:, :, 2]
         contacts = self.contact_forces[:, self.feet_indices, 2] > 0.1
-        about_to_land = (self.foot_heights < self.cfg.rewards.about_landing_threshold) & (~contacts) & (z_vels < 0.0)
+        # 计算足部相对于地面的高度
+        foot_heights_2d = self.foot_positions[:, :, 2] - self._get_foot_heights()
+        foot_heights_2d = torch.clip(foot_heights_2d, 0, 1)
+        about_to_land = (foot_heights_2d < self.cfg.rewards.about_landing_threshold) & (~contacts) & (z_vels < 0.0)
         landing_z_vels = torch.where(about_to_land, z_vels, torch.zeros_like(z_vels))
         reward = torch.sum(torch.square(landing_z_vels), dim=1)
         return reward
