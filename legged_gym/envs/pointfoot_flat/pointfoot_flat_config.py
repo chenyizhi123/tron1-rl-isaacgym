@@ -48,7 +48,7 @@ class BipedCfgPF(BaseConfig):
         fail_to_terminal_time_s = 0.5
 
     class terrain:
-        mesh_type = "plane"  # "heightfield" # none, plane, heightfield or trimesh
+        mesh_type = "trimesh"  # "heightfield" # none, plane, heightfield or trimesh
         horizontal_scale = 0.1  # [m]
         vertical_scale = 0.005  # [m]
         border_size = 25  # [m]
@@ -227,11 +227,11 @@ class BipedCfgPF(BaseConfig):
     class rewards:
         class scales:
             # termination related rewards
-            keep_balance = 0.8  # 降低平衡奖励权重，为跳跃留出空间
+            keep_balance = 1.3  # 降低平衡奖励权重，为跳跃留出空间
 
             # tracking related rewards
-            tracking_lin_vel = 1.2  # 稍微增加速度跟踪重要性
-            tracking_ang_vel = 0.5
+            tracking_lin_vel = 1.0  # 稍微增加速度跟踪重要性
+            tracking_ang_vel = 0.8
 
             # regulation related rewards - 调整以适应跳跃行为
             base_height = -0.2      # 降低高度惩罚，因为跳跃会改变高度
@@ -244,14 +244,14 @@ class BipedCfgPF(BaseConfig):
             collision = -1
             action_smooth = -0.008  # 降低动作平滑惩罚
             orientation = -5.0      # 降低姿态惩罚，跳跃时可能有姿态变化
-            feet_distance = -50     # 降低足间距惩罚
+            feet_distance = -100     # 降低足间距惩罚
             feet_regulation = -0.03 # 降低足部调节惩罚
             foot_landing_vel = -0.15
             tracking_contacts_shaped_force = -2
             tracking_contacts_shaped_vel = -2
             
             # 跳跃相关奖励权重
-            vertical_impulse = 1.0           # 鼓励向上推进力
+            vertical_impulse = 0.008           # 鼓励向上推进力
             jump_height = 1.0               # 奖励跳跃高度
             airtime = 1.0                   # 奖励适当腾空时间
             landing_stability = 1.5         # 奖励平稳着陆
