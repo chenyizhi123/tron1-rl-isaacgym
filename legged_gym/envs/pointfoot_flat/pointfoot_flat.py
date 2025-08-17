@@ -300,8 +300,48 @@ class BipedPF(BaseTask):
             ),
             dim=-1,
         )
+        
+        # 为critic添加跳跃相关的额外观测信息
+        # 1. 足部接触状态 (2维)
+        foot_contacts = (torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 1.0).float()
+        
+        # 2. 足部高度信息 (2维)
+        foot_heights_normalized = self.foot_heights * 10.0  # 归一化足部高度
+        
+        # 3. 基座垂直加速度 (1维)
+        base_z_acc = ((self.base_lin_vel[:, 2] - getattr(self, 'last_base_z_vel', torch.zeros_like(self.base_lin_vel[:, 2]))) / self.dt).unsqueeze(1)
+        self.last_base_z_vel = self.base_lin_vel[:, 2].clone()
+        
+        # 4. 接触力大小 (2维)
+        contact_force_magnitudes = torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) * 0.01  # 缩放
+        
+        # 5. 步态相位信息 (2维) - 增强版
+        gait_phase_enhanced = torch.cat([
+            self.desired_contact_states,  # 期望的接触状态
+        ], dim=-1)
+        
+        # 6. 腾空时间信息 (1维)
+        both_feet_airborne = (torch.sum(foot_contacts, dim=1) == 0).float().unsqueeze(1)
+        
+        # 7. 基座高度相对于目标的偏差 (1维)
+        base_height_error = (self.base_position[:, 2] - self.cfg.rewards.base_height_target).unsqueeze(1)
+        
+        # 8. 躯干倾斜度 (2维)
+        trunk_tilt = self.projected_gravity[:, :2]  # 重复使用已有的重力投影
+        
         critic_obs_buf = torch.cat((
-            self.base_lin_vel * self.obs_scales.lin_vel, self.obs_buf), dim=-1)
+            self.base_lin_vel * self.obs_scales.lin_vel,  # 基础线性速度 (3维)
+            self.obs_buf,  # 原始观测 (30维)
+            foot_contacts,  # 足部接触状态 (2维)
+            foot_heights_normalized,  # 足部高度 (2维)
+            base_z_acc,  # 垂直加速度 (1维)
+            contact_force_magnitudes,  # 接触力大小 (2维)
+            gait_phase_enhanced,  # 步态相位 (2维)
+            both_feet_airborne,  # 腾空状态 (1维)
+            base_height_error,  # 高度偏差 (1维)
+            trunk_tilt,  # 躯干倾斜 (2维)
+        ), dim=-1)
+        
         return obs_buf, critic_obs_buf
     
     # --------------------------- reward functions---------------------------
@@ -418,3 +458,133 @@ class BipedPF(BaseTask):
         landing_z_vels = torch.where(about_to_land, z_vels, torch.zeros_like(z_vels))
         reward = torch.sum(torch.square(landing_z_vels), dim=1)
         return reward
+
+    def _reward_vertical_impulse(self):
+        """鼓励向上的推进力，促进跳跃行为"""
+        contact_forces = self.contact_forces[:, self.feet_indices, :]
+        vertical_forces = contact_forces[:, :, 2]  # Z方向力
+        # 只在接触时计算奖励
+        in_contact = torch.norm(contact_forces, dim=-1) > 1.0
+        impulse = torch.where(in_contact, vertical_forces, torch.zeros_like(vertical_forces))
+        # 鼓励强力向上推进
+        reward = torch.sum(torch.clip(impulse - self.cfg.rewards.min_impulse_threshold, 0, None), dim=1)
+        return reward
+
+    def _reward_jump_height(self):
+        """奖励达到目标跳跃高度"""
+        both_feet_airborne = torch.sum(torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 1.0, dim=1) == 0
+        current_height = self.base_position[:, 2]
+        height_above_target = torch.clip(current_height - self.cfg.rewards.target_jump_height, 0, None)
+        reward = torch.where(both_feet_airborne, height_above_target, torch.zeros_like(height_above_target))
+        return reward
+
+    def _reward_airtime(self):
+        """奖励适当的腾空时间"""
+        both_feet_airborne = torch.sum(torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 1.0, dim=1) == 0
+        # 更新腾空时间计数
+        self.feet_air_time[:, 0] = torch.where(both_feet_airborne, 
+                                               self.feet_air_time[:, 0] + self.dt,
+                                               torch.zeros_like(self.feet_air_time[:, 0]))
+        # 奖励在目标腾空时间范围内的情况
+        target_airtime = self.cfg.rewards.target_airtime
+        airtime_error = torch.abs(self.feet_air_time[:, 0] - target_airtime)
+        reward = torch.exp(-airtime_error / self.cfg.rewards.airtime_sigma) * both_feet_airborne.float()
+        return reward
+
+    def _reward_landing_stability(self):
+        """奖励平稳着陆"""
+        # 检测着陆瞬间
+        current_contacts = torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 1.0
+        was_airborne = torch.sum(self.last_contacts, dim=1) == 0
+        just_landed = torch.sum(current_contacts, dim=1) > 0
+        landing_moment = was_airborne & just_landed
+        
+        # 着陆时的基座稳定性
+        base_angular_vel = torch.norm(self.base_ang_vel, dim=1)
+        base_lin_vel_z = torch.abs(self.base_lin_vel[:, 2])
+        stability_penalty = base_angular_vel + base_lin_vel_z
+        
+        reward = torch.where(landing_moment, 
+                           torch.exp(-stability_penalty / self.cfg.rewards.landing_stability_sigma),
+                           torch.zeros_like(stability_penalty))
+        return reward
+
+    def _reward_jump_frequency(self):
+        """鼓励合适的跳跃频率"""
+        both_feet_airborne = torch.sum(torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 1.0, dim=1) == 0
+        # 简单的跳跃频率奖励，基于步态频率
+        target_freq = self.gaits[:, 0]  # 使用步态频率作为目标跳跃频率
+        freq_reward = torch.where(both_feet_airborne, 
+                                target_freq / self.cfg.rewards.max_jump_frequency,
+                                torch.zeros_like(target_freq))
+        return freq_reward
+
+    def _reward_forward_jump_progress(self):
+        """鼓励向前跳跃的进展"""
+        both_feet_airborne = torch.sum(torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 1.0, dim=1) == 0
+        forward_vel = self.base_lin_vel[:, 0]
+        # 在腾空时奖励向前速度
+        reward = torch.where(both_feet_airborne & (forward_vel > 0), 
+                           forward_vel * self.cfg.rewards.forward_jump_scale,
+                           torch.zeros_like(forward_vel))
+        return reward
+
+    def check_termination(self):
+        """重写终止条件以适应跳跃行为"""
+        # 基础失败条件 - 适应跳跃行为
+        
+        # 1. 不良身体部位接触 - 提高接触力阈值，因为跳跃时力更大
+        fail_buf = torch.any(
+            torch.norm(
+                self.contact_forces[:, self.termination_contact_indices, :], dim=-1
+            ) > 15.0,  # 从10.0提高到15.0
+            dim=1,
+        )
+        
+        # 2. 严重倾斜 - 放宽一些，因为跳跃时可能有姿态变化
+        fail_buf |= self.projected_gravity[:, 2] > 0.2  # 从-0.1改为0.2，允许更大倾斜
+        
+        # 3. 跳跃特定失败条件
+        # 过度向后倾斜（危险）
+        fail_buf |= self.projected_gravity[:, 0] > 0.8  # 过度后倾
+        
+        # 基座位置过低（摔倒）
+        fail_buf |= self.base_position[:, 2] < 0.3  # 基座高度过低
+        
+        # 过度侧倾（危险）
+        fail_buf |= torch.abs(self.projected_gravity[:, 1]) > 0.8  # 过度侧倾
+        
+        # 4. 跳跃高度安全检查 - 防止过度跳跃
+        fail_buf |= self.base_position[:, 2] > 1.8  # 防止跳得过高而失控
+        
+        # 5. 长时间腾空检查（可能卡住）
+        both_feet_airborne = torch.sum(torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 1.0, dim=1) == 0
+        long_airtime = self.feet_air_time[:, 0] > 3.0  # 腾空超过0.8秒
+        fail_buf |= both_feet_airborne & long_airtime
+        
+        self.fail_buf += fail_buf
+        
+        # 超时条件
+        self.time_out_buf = (
+            self.episode_length_buf > self.max_episode_length
+        )
+        
+        # 功率限制
+        self.power_limit_out_buf = (
+            torch.sum(self.power, dim=1) > self.cfg.control.max_power
+        )
+        
+        # 地形边界检查
+        if self.cfg.terrain.mesh_type in ["heightfield", "trimesh"]:
+            self.edge_reset_buf = self.base_position[:, 0] > self.terrain_x_max - 1
+            self.edge_reset_buf |= self.base_position[:, 0] < self.terrain_x_min + 1
+            self.edge_reset_buf |= self.base_position[:, 1] > self.terrain_y_max - 1
+            self.edge_reset_buf |= self.base_position[:, 1] < self.terrain_y_min + 1
+        
+        # 最终重置决策
+        self.reset_buf = (
+            (self.fail_buf > self.cfg.env.fail_to_terminal_time_s / self.dt)
+            | self.time_out_buf
+            | self.edge_reset_buf
+            # | self.power_limit_out_buf  # 暂时禁用功率限制，跳跃需要更大功率
+        )

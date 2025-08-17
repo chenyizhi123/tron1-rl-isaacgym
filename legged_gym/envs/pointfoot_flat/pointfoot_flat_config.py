@@ -37,7 +37,7 @@ class BipedCfgPF(BaseConfig):
     class env:
         num_envs = 8192
         num_observations = 30
-        num_critic_observations = 3 + num_observations
+        num_critic_observations = 46  # 3 + 30 + 13 (新增跳跃相关观测)
         num_height_samples = 117
         num_actions = 6
         env_spacing = 3.0  # not used with heightfields/trimeshes
@@ -116,16 +116,13 @@ class BipedCfgPF(BaseConfig):
         resampling_time = 5  # time before command are changed[s]
 
         class ranges:
-            frequencies = [1.5, 2.5]
-            offsets = [0, 1]  # offset is hard to learn
-            # durations = [0.3, 0.8]  # small durations(<0.4) is hard to learn
-            # frequencies = [2, 2]
-            # offsets = [0.5, 0.5]
-            durations = [0.5, 0.5]
-            swing_height = [0.0, 0.1]
+            frequencies = [1.2, 3.5]           # 支持更高频率的跳跃步态
+            offsets = [0, 1]                   # offset is hard to learn
+            durations = [0.2, 0.4]             # 更短的接触时间，更长的腾空时间
+            swing_height = [0.05, 0.25]        # 更高的摆动高度以支持跳跃
 
     class init_state:
-        pos = [0.0, 0.0, 0.8]  # x,y,z [m]
+        pos = [0.0, 0.0, 0.85]  # 稍微增加初始高度以适应跳跃行为
         rot = [0.0, 0.0, 0.0, 1.0]  # x,y,z,w [quat]
         lin_vel = [0.0, 0.0, 0.0]  # x,y,z [m/s]
         ang_vel = [0.0, 0.0, 0.0]  # x,y,z [rad/s]
@@ -141,33 +138,35 @@ class BipedCfgPF(BaseConfig):
         }
 
     class control:
-        action_scale = 0.25
+        action_scale = 0.4  # 增加动作缩放以支持更大幅度的跳跃动作
 
         control_type = "P"
+        # 增加主要关节的控制刚度以支持爆发力输出
         stiffness = {
-            "abad_L_Joint": 42,
-            "hip_L_Joint": 42,
-            "knee_L_Joint": 42,
+            "abad_L_Joint": 55,  # 增强髋关节外展控制
+            "hip_L_Joint": 65,   # 增强髋关节控制（关键跳跃关节）
+            "knee_L_Joint": 65,  # 增强膝关节控制（关键跳跃关节）
             "foot_L_Joint": 0.0,
-            "abad_R_Joint": 42,
-            "hip_R_Joint": 42,
-            "knee_R_Joint": 42,
+            "abad_R_Joint": 55,
+            "hip_R_Joint": 65,
+            "knee_R_Joint": 65,
             "foot_R_Joint": 0.0,
         }  # [N*m/rad]
+        # 适度增加阻尼以控制高速运动
         damping = {
-            "abad_L_Joint": 2.5,
-            "hip_L_Joint": 2.5,
-            "knee_L_Joint": 2.5,
+            "abad_L_Joint": 3.5,
+            "hip_L_Joint": 4.0,  # 增加髋关节阻尼
+            "knee_L_Joint": 4.0, # 增加膝关节阻尼
             "foot_L_Joint": 0.0,
-            "abad_R_Joint": 2.5,
-            "hip_R_Joint": 2.5,
-            "knee_R_Joint": 2.5,
+            "abad_R_Joint": 3.5,
+            "hip_R_Joint": 4.0,
+            "knee_R_Joint": 4.0,
             "foot_R_Joint": 0.0,
         }  # [N*m*s/rad]
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
-        user_torque_limit = 80.0
-        max_power = 1000.0  # [W]
+        user_torque_limit = 120.0  # 增加扭矩限制以支持跳跃
+        max_power = 1500.0  # 增加功率限制 [W]
 
     class asset:
         file = "{}/resources/robots/{}/urdf/robot.urdf".format(LEGGED_GYM_ROOT_DIR, robot_type)
@@ -228,28 +227,36 @@ class BipedCfgPF(BaseConfig):
     class rewards:
         class scales:
             # termination related rewards
-            keep_balance = 1.0
+            keep_balance = 0.8  # 降低平衡奖励权重，为跳跃留出空间
 
             # tracking related rewards
-            tracking_lin_vel = 1
+            tracking_lin_vel = 1.2  # 稍微增加速度跟踪重要性
             tracking_ang_vel = 0.5
 
-            # regulation related rewards
-            base_height = -2
-            lin_vel_z = -0.5
+            # regulation related rewards - 调整以适应跳跃行为
+            base_height = -0.2      # 降低高度惩罚，因为跳跃会改变高度
+            lin_vel_z = -0.0        # 降低Z向速度惩罚，跳跃需要Z向运动
             ang_vel_xy = -0.05
-            torques = -0.00008
-            dof_acc = -2.5e-7
-            action_rate = -0.01
+            torques = -0.00006      # 略微降低扭矩惩罚，跳跃需要更大扭矩
+            dof_acc = -2.0e-7       # 降低关节加速度惩罚
+            action_rate = -0.008    # 降低动作变化率惩罚
             dof_pos_limits = -2.0
             collision = -1
-            action_smooth = -0.01
-            orientation = -10.0
-            feet_distance = -100
-            feet_regulation = -0.05
+            action_smooth = -0.008  # 降低动作平滑惩罚
+            orientation = -5.0      # 降低姿态惩罚，跳跃时可能有姿态变化
+            feet_distance = -50     # 降低足间距惩罚
+            feet_regulation = -0.03 # 降低足部调节惩罚
             foot_landing_vel = -0.15
             tracking_contacts_shaped_force = -2
             tracking_contacts_shaped_vel = -2
+            
+            # 跳跃相关奖励权重
+            vertical_impulse = 1.0           # 鼓励向上推进力
+            jump_height = 1.0               # 奖励跳跃高度
+            airtime = 1.0                   # 奖励适当腾空时间
+            landing_stability = 1.5         # 奖励平稳着陆
+            jump_frequency = 0.8            # 鼓励合适跳跃频率  
+            forward_jump_progress = 1.2     # 鼓励向前跳跃进展
 
         only_positive_rewards = False  # if true negative total rewards are clipped at zero (avoids early termination problems)
         clip_reward = 100
@@ -262,7 +269,7 @@ class BipedCfgPF(BaseConfig):
         )
         soft_dof_vel_limit = 1.0
         soft_torque_limit = 0.8
-        base_height_target = 0.68 # 0.58
+        base_height_target = 0.72  # 增加目标高度以适应跳跃姿态
         feet_height_target = 0.10
         min_feet_distance = 0.115
         about_landing_threshold = 0.08
@@ -271,6 +278,15 @@ class BipedCfgPF(BaseConfig):
         gait_force_sigma = 25.0
         gait_vel_sigma = 0.25
         gait_height_sigma = 0.005
+        
+        # 跳跃相关参数
+        min_impulse_threshold = 20.0        # 最小推力阈值
+        target_jump_height = 0.9           # 目标跳跃高度 (米)
+        target_airtime = 0.25              # 目标腾空时间 (秒)
+        airtime_sigma = 0.05               # 腾空时间奖励的标准差
+        landing_stability_sigma = 1.0      # 着陆稳定性奖励的标准差
+        max_jump_frequency = 3.0           # 最大跳跃频率
+        forward_jump_scale = 0.5           # 向前跳跃速度奖励缩放
 
     class normalization:
         class obs_scales:
