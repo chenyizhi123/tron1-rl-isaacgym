@@ -116,13 +116,13 @@ class BipedCfgPF(BaseConfig):
         resampling_time = 5  # time before command are changed[s]
 
         class ranges:
-            frequencies = [1.5, 2.5]
+            frequencies = [1.0, 2.0]  # 单腿行走可以稍微慢一点
             offsets = [0, 1]  # offset is hard to learn
             # durations = [0.3, 0.8]  # small durations(<0.4) is hard to learn
             # frequencies = [2, 2]
             # offsets = [0.5, 0.5]
-            durations = [0.5, 0.5]
-            swing_height = [0.0, 0.1]
+            durations = [0.3, 0.7]     # 单腿行走时支撑腿可以有更多变化
+            swing_height = [0.05, 0.15]  # 非支撑腿需要抬高一些
 
     class init_state:
         pos = [0.0, 0.0, 0.8]  # x,y,z [m]
@@ -228,7 +228,7 @@ class BipedCfgPF(BaseConfig):
     class rewards:
         class scales:
             # termination related rewards
-            keep_balance = 1.0
+            keep_balance = 2.0
 
             # tracking related rewards
             tracking_lin_vel = 1
@@ -245,11 +245,16 @@ class BipedCfgPF(BaseConfig):
             collision = -1
             action_smooth = -0.01
             orientation = -10.0
-            feet_distance = -100
+            feet_distance = -10.0  # 禁用双脚距离限制
             feet_regulation = -0.05
             foot_landing_vel = -0.15
-            tracking_contacts_shaped_force = -2
-            tracking_contacts_shaped_vel = -2
+            tracking_contacts_shaped_force = -1
+            tracking_contacts_shaped_vel = -1
+            
+            # 单腿行走相关奖励
+            single_leg_support = 5.0        # 奖励支撑腿接触
+            non_support_leg_penalty = -20.0 # 惩罚非支撑腿接触
+            single_leg_balance = 3.0        # 单腿平衡奖励
 
         only_positive_rewards = False  # if true negative total rewards are clipped at zero (avoids early termination problems)
         clip_reward = 100
@@ -262,7 +267,7 @@ class BipedCfgPF(BaseConfig):
         )
         soft_dof_vel_limit = 1.0
         soft_torque_limit = 0.8
-        base_height_target = 0.68 # 0.58
+        base_height_target = 0.65 # 单腿行走时稍微降低重心
         feet_height_target = 0.10
         min_feet_distance = 0.115
         about_landing_threshold = 0.08
@@ -271,6 +276,10 @@ class BipedCfgPF(BaseConfig):
         gait_force_sigma = 25.0
         gait_vel_sigma = 0.25
         gait_height_sigma = 0.005
+        
+        # 单腿行走参数
+        single_leg_mode = True          # 启用单腿行走模式
+        support_leg_id = 1              # 支撑腿ID (0=左腿, 1=右腿)
 
     class normalization:
         class obs_scales:

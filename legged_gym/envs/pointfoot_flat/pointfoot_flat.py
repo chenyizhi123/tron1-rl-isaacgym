@@ -400,6 +400,44 @@ class BipedPF(BaseTask):
         reward = torch.clip(self.cfg.rewards.min_feet_distance - feet_distance, 0, 1)
         return reward
 
+    def _reward_single_leg_support(self):
+        # 奖励支撑腿接触地面
+        if not hasattr(self.cfg.rewards, 'single_leg_mode') or not self.cfg.rewards.single_leg_mode:
+            return torch.zeros(self.num_envs, device=self.device)
+        
+        support_leg_id = self.cfg.rewards.support_leg_id
+        support_leg_contact = self.contact_forces[:, self.feet_indices[support_leg_id], 2] > 1.0
+        return support_leg_contact.float()
+
+    def _reward_non_support_leg_penalty(self):
+        # 惩罚非支撑腿接触地面
+        if not hasattr(self.cfg.rewards, 'single_leg_mode') or not self.cfg.rewards.single_leg_mode:
+            return torch.zeros(self.num_envs, device=self.device)
+        
+        support_leg_id = self.cfg.rewards.support_leg_id
+        non_support_leg_id = 1 - support_leg_id
+        non_support_contact = self.contact_forces[:, self.feet_indices[non_support_leg_id], 2] > 1.0
+        return non_support_contact.float()
+
+    def _reward_single_leg_balance(self):
+        # 奖励在单腿支撑时的平衡能力
+        if not hasattr(self.cfg.rewards, 'single_leg_mode') or not self.cfg.rewards.single_leg_mode:
+            return torch.zeros(self.num_envs, device=self.device)
+        
+        support_leg_id = self.cfg.rewards.support_leg_id
+        non_support_leg_id = 1 - support_leg_id
+        
+        support_contact = self.contact_forces[:, self.feet_indices[support_leg_id], 2] > 1.0
+        non_support_contact = self.contact_forces[:, self.feet_indices[non_support_leg_id], 2] > 1.0
+        
+        # 只有支撑腿接触且非支撑腿不接触时才给奖励
+        single_leg_stance = support_contact & (~non_support_contact)
+        
+        # 结合姿态稳定性
+        orientation_stability = torch.exp(-torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1))
+        
+        return single_leg_stance.float() * orientation_stability
+
     def _reward_feet_regulation(self):
         feet_height = self.cfg.rewards.base_height_target * 0.001
         reward = torch.sum(
@@ -418,3 +456,20 @@ class BipedPF(BaseTask):
         landing_z_vels = torch.where(about_to_land, z_vels, torch.zeros_like(z_vels))
         reward = torch.sum(torch.square(landing_z_vels), dim=1)
         return reward
+
+    def _post_physics_step_callback(self):
+        # 调用父类的方法
+        super()._post_physics_step_callback()
+        
+        # 单腿行走模式下修改desired_contact_states
+        if hasattr(self.cfg.rewards, 'single_leg_mode') and self.cfg.rewards.single_leg_mode:
+            support_leg_id = self.cfg.rewards.support_leg_id
+            non_support_leg_id = 1 - support_leg_id
+            
+            # 非支撑腿的desired_contact_states设为0（始终不应该接触）
+            self.desired_contact_states[:, non_support_leg_id] = 0.0
+            
+            # 支撑腿保持原有的步态模式，但确保接触概率更高
+            self.desired_contact_states[:, support_leg_id] = torch.clamp(
+                self.desired_contact_states[:, support_leg_id] + 0.3, 0.0, 1.0
+            )
