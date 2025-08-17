@@ -116,13 +116,13 @@ class BipedCfgPF(BaseConfig):
         resampling_time = 5  # time before command are changed[s]
 
         class ranges:
-            frequencies = [1.0, 2.0]  # 单腿行走可以稍微慢一点
+            frequencies = [0.8, 1.5]    # 更慢的频率，让机器人有时间平衡
             offsets = [0, 1]  # offset is hard to learn
             # durations = [0.3, 0.8]  # small durations(<0.4) is hard to learn
             # frequencies = [2, 2]
             # offsets = [0.5, 0.5]
-            durations = [0.3, 0.7]     # 单腿行走时支撑腿可以有更多变化
-            swing_height = [0.05, 0.15]  # 非支撑腿需要抬高一些
+            durations = [0.6, 0.8]     # 支撑腿更长时间接触地面
+            swing_height = [0.06, 0.12]  # 适中的抬腿高度
 
     class init_state:
         pos = [0.0, 0.0, 0.8]  # x,y,z [m]
@@ -234,17 +234,17 @@ class BipedCfgPF(BaseConfig):
             tracking_lin_vel = 1
             tracking_ang_vel = 0.5
 
-            # regulation related rewards
-            base_height = -2
-            lin_vel_z = -0.5
-            ang_vel_xy = -0.05
-            torques = -0.00008
-            dof_acc = -2.5e-7
-            action_rate = -0.01
-            dof_pos_limits = -2.0
+            # regulation related rewards (调整以适应单腿行走)
+            base_height = -1.0       # 减少对高度的严格要求
+            lin_vel_z = -0.3         # 减少对垂直速度的惩罚
+            ang_vel_xy = -0.03       # 减少对姿态角速度的惩罚
+            torques = -0.00005       # 减少对扭矩的惩罚
+            dof_acc = -1e-7          # 减少对关节加速度的惩罚
+            action_rate = -0.005     # 减少对动作变化的惩罚
+            dof_pos_limits = -1.0    # 减少对关节限制的惩罚
             collision = -1
-            action_smooth = -0.01
-            orientation = -10.0
+            action_smooth = -0.005   # 减少对动作平滑的惩罚
+            orientation = -5.0       # 减少对姿态的严格要求
             feet_distance = -10.0  # 禁用双脚距离限制
             feet_regulation = -0.05
             foot_landing_vel = -0.15
@@ -252,9 +252,11 @@ class BipedCfgPF(BaseConfig):
             tracking_contacts_shaped_vel = -1
             
             # 单腿行走相关奖励
-            single_leg_support = 5.0        # 奖励支撑腿接触
-            non_support_leg_penalty = -20.0 # 惩罚非支撑腿接触
-            single_leg_balance = 3.0        # 单腿平衡奖励
+            single_leg_support = 3.0        # 奖励支撑腿正确接触模式
+            non_support_leg_penalty = -15.0 # 惩罚非支撑腿接触
+            single_leg_balance = 4.0        # 单腿平衡奖励
+            upright_posture = 8.0           # 防止跪地，鼓励直立
+            non_support_leg_height = 2.0    # 非支撑腿高度控制
 
         only_positive_rewards = False  # if true negative total rewards are clipped at zero (avoids early termination problems)
         clip_reward = 100

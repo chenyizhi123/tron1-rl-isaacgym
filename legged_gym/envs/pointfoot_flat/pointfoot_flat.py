@@ -401,13 +401,17 @@ class BipedPF(BaseTask):
         return reward
 
     def _reward_single_leg_support(self):
-        # 奖励支撑腿接触地面
+        # 奖励支撑腿正确的接触模式
         if not hasattr(self.cfg.rewards, 'single_leg_mode') or not self.cfg.rewards.single_leg_mode:
             return torch.zeros(self.num_envs, device=self.device)
         
         support_leg_id = self.cfg.rewards.support_leg_id
         support_leg_contact = self.contact_forces[:, self.feet_indices[support_leg_id], 2] > 1.0
-        return support_leg_contact.float()
+        desired_support_contact = self.desired_contact_states[:, support_leg_id] > 0.5
+        
+        # 奖励按照期望接触状态的正确接触
+        correct_contact = (support_leg_contact == desired_support_contact).float()
+        return correct_contact
 
     def _reward_non_support_leg_penalty(self):
         # 惩罚非支撑腿接触地面
@@ -438,6 +442,44 @@ class BipedPF(BaseTask):
         
         return single_leg_stance.float() * orientation_stability
 
+    def _reward_upright_posture(self):
+        # 防止跪地，鼓励直立姿态
+        if not hasattr(self.cfg.rewards, 'single_leg_mode') or not self.cfg.rewards.single_leg_mode:
+            return torch.zeros(self.num_envs, device=self.device)
+        
+        # 检查机器人是否保持直立（重心高度）
+        current_height = self.root_states[:, 2]
+        target_height = self.cfg.rewards.base_height_target
+        
+        # 奖励接近目标高度，惩罚过低（跪地）
+        height_reward = torch.exp(-torch.square(current_height - target_height) / 0.1)
+        
+        # 额外惩罚过低的高度
+        too_low_penalty = torch.where(
+            current_height < target_height - 0.1, 
+            torch.zeros_like(height_reward), 
+            height_reward
+        )
+        
+        return too_low_penalty
+
+    def _reward_non_support_leg_height(self):
+        # 给非支撑腿一个合理的高度目标，防止划桨
+        if not hasattr(self.cfg.rewards, 'single_leg_mode') or not self.cfg.rewards.single_leg_mode:
+            return torch.zeros(self.num_envs, device=self.device)
+        
+        non_support_leg_id = 1 - self.cfg.rewards.support_leg_id
+        non_support_foot_height = self.foot_heights[:, non_support_leg_id]
+        
+        # 目标高度：稍微抬起但不要太高
+        target_lift_height = 0.08  # 8cm
+        
+        # 奖励保持在合理高度范围内
+        height_error = torch.abs(non_support_foot_height - target_lift_height)
+        height_reward = torch.exp(-height_error / 0.03)  # 3cm的容差
+        
+        return height_reward
+
     def _reward_feet_regulation(self):
         feet_height = self.cfg.rewards.base_height_target * 0.001
         reward = torch.sum(
@@ -466,10 +508,18 @@ class BipedPF(BaseTask):
             support_leg_id = self.cfg.rewards.support_leg_id
             non_support_leg_id = 1 - support_leg_id
             
-            # 非支撑腿的desired_contact_states设为0（始终不应该接触）
-            self.desired_contact_states[:, non_support_leg_id] = 0.0
+            # 重新设计单腿步态：支撑腿主要接触，但允许抬起进行步态
+            # 支撑腿：65%时间接触，35%时间抬起（用于向前迈步和调整姿态）
+            support_contact_ratio = 0.65
+            current_gait_phase = self.gait_indices
             
-            # 支撑腿保持原有的步态模式，但确保接触概率更高
-            self.desired_contact_states[:, support_leg_id] = torch.clamp(
-                self.desired_contact_states[:, support_leg_id] + 0.3, 0.0, 1.0
+            # 支撑腿的接触模式：大部分时间接触，但允许正常步态
+            support_contact_phase = torch.where(
+                current_gait_phase < support_contact_ratio,
+                torch.ones_like(current_gait_phase),  # 接触期
+                torch.zeros_like(current_gait_phase)   # 抬起期（用于迈步）
             )
+            self.desired_contact_states[:, support_leg_id] = support_contact_phase
+            
+            # 非支撑腿：完全不接触，但要保持合理高度
+            self.desired_contact_states[:, non_support_leg_id] = 0.0
